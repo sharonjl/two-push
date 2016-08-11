@@ -17,30 +17,25 @@ var ErrDeviceExists = errors.New("device exists")
 var ErrInterestExists = errors.New("interest exists")
 
 type Device struct {
-	ID             uuid.Uuid `db:"id"`
-	Facility       string    `db:"facility"`
-	UserID         string    `db:"user_id"`
-	Token          string    `db:"device_token"`
-	Provider       string    `db:"device_provider"`
-	LastNotifiedOn null.Time `db:"last_notified_on"`
-	CreatedOn      time.Time `db:"created_on"`
+	ID             *uuid.Uuid `db:"id"`
+	Facility       string     `db:"facility"`
+	UserID         string     `db:"user_id"`
+	Token          string     `db:"device_token"`
+	Provider       string     `db:"device_provider"`
+	LastNotifiedOn null.Time  `db:"last_notified_on"`
+	CreatedOn      time.Time  `db:"created_on"`
 }
 
-// interestURL generates a unique url to represent the interest specified
-// in the subscription. For example, an interest on likes for video:5
-// would generate 2p://interest/likes/video/5, as the url.
-func (d *Device) uniqueName() uuid.Name {
-	return uuid.Name(fmt.Sprintf("2p://devices/facility/%s/user/%s/provider/%s/token/%s",
+// DeviceUUID generates a v5 UUID based on an resource URL that uniquely
+// identifies the device
+func DeviceUUID(d *Device) *uuid.Uuid {
+	url := fmt.Sprintf("2p://devices/facility/%s/user/%s/provider/%s/token/%s",
 		d.Facility,
 		d.UserID,
 		d.Provider,
-		d.Token))
-}
-
-// interestUUID generates a v5 UUID based on the interest URL of
-// the subscription.
-func (d *Device) uuid() uuid.Uuid {
-	return uuid.NewV5(uuid.NameSpaceURL, d.uniqueName())
+		d.Token)
+	id := uuid.NewV5(uuid.NameSpaceURL, uuid.Name(url))
+	return &id
 }
 
 type Interest struct {
@@ -52,20 +47,12 @@ type Interest struct {
 	CreatedOn time.Time  `db:"created_on"`
 }
 
-// interestUUID generates a v5 UUID based on the interest URL of
-// the subscription.
+// TopicUUID generates a v5 UUID based on a resource URL that uniquely
+// identifies the topic.
 func TopicUUID(t string) *uuid.Uuid {
 	url := uuid.Name(fmt.Sprintf("2p://interest/topic/%s", t))
 	id := uuid.NewV5(uuid.NameSpaceURL, url)
 	return &id
-}
-
-type Job struct {
-	ID      uint64 `db:"id"`
-	Topic   string `db:"topic"`
-	Message string `db:"message"`
-
-	CreatedOn time.Time `db:"created_on"`
 }
 
 type Database interface {
@@ -103,7 +90,7 @@ func NewPQDatabase(db *sqlx.DB) *pqDatabase {
 }
 
 func (db *pqDatabase) AddDevice(device *Device) error {
-	device.ID = device.uuid()
+	device.ID = DeviceUUID(device)
 	q := `
 		INSERT INTO twopush_devices
 			(id, facility, user_id, device_token, device_provider)

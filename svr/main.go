@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/engine/standard"
+	"github.com/leebenson/conform"
 	"github.com/sharonjl/go-commons/math"
 	"github.com/sharonjl/go-commons/queue"
 	"github.com/twinj/uuid"
@@ -49,9 +50,13 @@ var (
 )
 
 func init() {
-
-}
-func main() {
+	valid.RegisterValidation("pushprovider", func(fl validator.FieldLevel) bool {
+		switch fl.Field().String() {
+		case "apns":
+			return true
+		}
+		return false
+	})
 
 	flag.StringVar(&fPort, "p", "", "HTTP port")
 	flag.StringVar(&fFacilities, "f", "", "Allowed facility secrets")
@@ -65,8 +70,10 @@ func main() {
 	flag.StringVar(&fSQSQueue, "sqs:q", "", "SQS queue name")
 	flag.StringVar(&fSQSRegion, "sqs:region", "", "SQS Region")
 	flag.StringVar(&fOSAppID, "push:os:app_id", "", "One signal app id")
-	flag.Parse()
+}
+func main() {
 
+	flag.Parse()
 	facilities = strings.Split(fFacilities, ",")
 
 	initDB()
@@ -78,7 +85,6 @@ func main() {
 }
 
 func initDB() {
-
 	cstr := fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s sslmode=disable",
 		fDBUser,
 		fDBPassword,
@@ -213,13 +219,17 @@ func dispatchPushJob(msg *sqs.Message) error {
 			return err
 		}
 
-		tokens := make([]string, len(devices))
-		for k, dev := range devices {
-			tokens[k] = dev.Token
+		apnsTokens := make([]string, len(devices))
+		apnsTokenCnt := 0
+		for _, dev := range devices {
+			if dev.Provider == "apns" {
+				apnsTokens[apnsTokenCnt] = dev.Token
+				apnsTokenCnt += 1
+			}
 		}
 
 		// Send push
-		err = pushSvc.Push(job.Message, job.NotifyCount, job.Data, tokens)
+		err = pushSvc.Push(job.Message, job.NotifyCount, job.Data, apnsTokens[:apnsTokenCnt])
 		if err != nil {
 			return err
 		}
@@ -251,29 +261,28 @@ func authFacility(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 type addDeviceForm struct {
-	UserID         string `json:"user_id" validate:"required"`
-	DeviceToken    string `json:"device_token" validate:"required"`
-	DeviceProvider string `json:"device_provider" validate:"required"`
+	UserID         string `json:"user_id" conform:"trim" validate:"required"`
+	DeviceToken    string `json:"device_token" conform:"trim" validate:"required"`
+	DeviceProvider string `json:"device_provider" conform:"trim" validate:"required,pushprovider"`
 }
 
 func addDevice(c echo.Context) error {
-	f := new(addDeviceForm)
-	if err := c.Bind(&f); err != nil {
+	var frm addDeviceForm
+	if err := c.Bind(&frm); err != nil {
 		return err
 	}
-	f.DeviceProvider = strings.TrimSpace(f.DeviceProvider)
-	f.DeviceToken = strings.TrimSpace(f.DeviceToken)
-	f.UserID = strings.TrimSpace(f.UserID)
-	if f.UserID == "" || f.DeviceProvider == "" || f.DeviceToken == "" {
+
+	conform.Strings(&frm)
+	if err := valid.Struct(&frm); err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
 
 	fac := c.Get(HeaderFacility).(string)
 	device := &Device{
 		Facility: fac,
-		UserID:   f.UserID,
-		Token:    f.DeviceToken,
-		Provider: f.DeviceProvider,
+		UserID:   frm.UserID,
+		Token:    frm.DeviceToken,
+		Provider: frm.DeviceProvider,
 	}
 	if err := myDB.AddDevice(device); err != nil {
 		if err != ErrDeviceExists {
@@ -326,8 +335,8 @@ func removeUserDevices(c echo.Context) error {
 }
 
 type addInterestForm struct {
-	UserID    string `json:"user_id" validate:"required"`
-	Topic     string `json:"topic" validate:"required"`
+	UserID    string `json:"user_id" conform:"trim" validate:"required"`
+	Topic     string `json:"topic" conform:"trim" validate:"required"`
 	ExpiresOn int64  `json:"expires_on" validate:"required"`
 }
 
@@ -342,9 +351,7 @@ func addInterest(c echo.Context) error {
 
 	fac := c.Get(HeaderFacility).(string)
 	for _, it := range its {
-		it.UserID = strings.TrimSpace(it.UserID)
-		it.Topic = strings.TrimSpace(it.Topic)
-
+		conform.Strings(it)
 		exp := null.TimeFromPtr(nil)
 		if it.ExpiresOn > 0 {
 			exp.SetValid(time.Unix(it.ExpiresOn, 0))
@@ -401,8 +408,8 @@ func removeUserInterests(c echo.Context) error {
 }
 
 type pushForm struct {
-	Topic       string      `json:"topic" validate:"required"`
-	Message     string      `json:"message" validate:"required"`
+	Topic       string      `json:"topic" conform:"trim" validate:"required"`
+	Message     string      `json:"message" conform:"trim" validate:"required"`
 	NotifyCount int         `json:"notify_count" validate:"required"`
 	Data        interface{} `json:"data" validate:"-"`
 }
@@ -416,6 +423,7 @@ func addPushJobs(c echo.Context) error {
 
 	m := make([]string, len(forms))
 	for k, frm := range forms {
+		conform.Strings(&frm)
 		if err := valid.Struct(frm); err != nil {
 			return c.NoContent(http.StatusBadRequest)
 		}
